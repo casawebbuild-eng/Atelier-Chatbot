@@ -171,6 +171,50 @@ It prints a key once and saves only its SHA-256 hash in `brands/casa-atelier.jso
 client the key and `<your-site>/admin`. Signed in with it, they see their own documents and a test chat, with the
 client name locked, and no security checklist. `--rotate` replaces a key, and the old one stops working.
 
+## If a key is lost or stops working
+
+**A client lost their key.** It can't be looked up: only a one-way hash is stored, so nobody, including you, can
+read it back. Make a new one:
+
+```powershell
+py tools\make_client_key.py casa-atelier --rotate
+```
+
+Send the client the new key. The old one stops working at once. Then publish the updated brand file
+(`.\ship "Rotate casa-atelier key"`, and copy it to the server if the site is hosted). It does not need a restart.
+
+**You lost your admin key.** It is stored in Windows, so copy it back to the clipboard (nothing is printed):
+
+```powershell
+[Environment]::GetEnvironmentVariable("ATELIER_ADMIN_KEY","User") | Set-Clipboard
+```
+
+Paste it into the key box on the admin page. If that prints an error or pastes nothing, it was never saved. Make a
+new one and put the same value in three places:
+
+```powershell
+$k = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N"); $k | Set-Clipboard
+setx ATELIER_ADMIN_KEY $k
+```
+
+1. n8n: open the KB Ingest workflow, edit the Header Auth credential on its webhook (Name `X-Admin-Key`), paste the
+   value, and publish.
+2. Open a new terminal and restart `py app.py`.
+3. Paste it into the admin page.
+
+On a hosted server the key is a setting of the server, not a file in the repo. Change it there. Keep a copy in a
+password manager, and never paste a key into a chat, a screenshot or a file you commit.
+
+**The page says the key isn't right, and you are sure it is.** Check these in order:
+
+- The key was rotated since you last used it: a new key replaces the old one completely.
+- Extra characters came along when copying, such as a space or a line break. Paste again.
+- The server is running with an older value of `ATELIER_ADMIN_KEY`. A terminal opened before `setx` keeps the old
+  one. Close it, open a new one and start the server again.
+
+**Locked out.** Eight wrong keys from one address lock that address for ten minutes, even if the next key is
+correct. Wait it out, or restart the server: the count is kept in memory.
+
 ## Production
 
 ```bash
