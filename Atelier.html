@@ -272,11 +272,20 @@ html.embed .hint{display:none}
   var SESSION=(function(){try{var s=localStorage.getItem('atelier.sid');if(!s){s=uid();localStorage.setItem('atelier.sid',s)}return s}catch(e){return uid()}})();
   /* Sends {chatId, sessionId, message, messages} as JSON. Reads the reply from
      reply / output / message / text, or the raw body if it is plain text. */
+  /* A refused request: when the server says "slow down" (429) the visitor gets its message, not a vague error. */
+  function failFrom(r){
+    return r.text().then(function(t){
+      var msg='';try{msg=JSON.parse(t).error||''}catch(e){}
+      var e=new Error('HTTP '+r.status);e.status=r.status;
+      if(r.status===429)e.userMessage=msg||'Too many requests in a short time. Please wait a moment and try again.';
+      throw e;
+    });
+  }
   function sendToBackend(messages,chatId){
     var history=messages.slice(0,-1).slice(-12).map(function(m){return (m.role==='user'?'User: ':'Assistant: ')+(m.content||(m.img?'[Image]':''))}).join('\n');
     return fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({brand:PATH_BRAND,chatId:chatId,sessionId:SESSION,message:messages[messages.length-1].content,isFirst:messages.length===1,history:history,messages:messages.map(function(m){return {role:m.role,content:m.content||(m.img?'[Image]':''),t:m.t}})})})
-    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text()})
+      body:JSON.stringify({brand:PATH_BRAND,chatId:chatId,sessionId:SESSION,message:messages[messages.length-1].content,isFirst:messages.length===1,history:history})})
+    .then(function(r){if(!r.ok)return failFrom(r);return r.text()})
     .then(function(t){try{var d=JSON.parse(t);if(Array.isArray(d))d=d[0];return {reply:d.reply||d.output||d.message||d.text||t,title:d.title||''}}catch(e){return {reply:t,title:''}}});
   }
 
@@ -377,13 +386,13 @@ html.embed .hint{display:none}
       return stream(el.querySelector('.bubble'),reply).then(function(){c.messages.push(m);c.updated=Date.now();save();var nt=cleanTitle(res.title);if(nt){c.title=nt;save();renderList()}});
     }).catch(function(err){console.error('Webhook error:',err);
       th.remove();
-      var el=msgEl({role:'assistant',content:'Something went wrong reaching the assistant. Please try again in a moment.',t:Date.now()});console.warn('Webhook failed:',err);thread.appendChild(el);
+      var el=msgEl({role:'assistant',content:(err&&err.userMessage)||'Something went wrong reaching the assistant. Please try again in a moment.',t:Date.now()});console.warn('Webhook failed:',err);thread.appendChild(el);
     }).then(function(){setBusy(false);renderList();input.focus()});
   }
 
   /* ---- images ---- */
   /* n8n workflow that receives multipart fields "image" (file) + "message" (text) and returns {message} */
-  var ANALYZE_URL='https://science-footgear-darwinism.ngrok-free.dev/webhook/atelier-image';
+  var ANALYZE_URL='/api/image';
   var pendingImg=null;   /* {blob: resized JPEG to upload, thumb: small data-URL saved with the chat} */
   var fileEl=$('file'), attachBtn=$('attach'), chipEl=$('imgchip');
 
@@ -425,8 +434,8 @@ html.embed .hint{display:none}
   }
   function analyzeImage(blob,text){
     var fd=new FormData();fd.append('image',blob,'image.jpg');fd.append('message',text||'');
-    return fetch(ANALYZE_URL,{method:'POST',headers:{'ngrok-skip-browser-warning':'1'},body:fd})
-      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text()})
+    return fetch(ANALYZE_URL,{method:'POST',body:fd})
+      .then(function(r){if(!r.ok)return failFrom(r);return r.text()})
       .then(function(t){
         var out=t;try{var j=JSON.parse(t);if(Array.isArray(j))j=j[0];out=j.message||j.reply||j.output||j.text||''}catch(e){}
         out=String(out).trim();if(!out)throw new Error('empty reply');
@@ -447,7 +456,7 @@ html.embed .hint{display:none}
 
   /* ---- voice notes ---- */
   /* n8n workflow that receives the recording (multipart field "audio") and returns {text} */
-  var TRANSCRIBE_URL='https://science-footgear-darwinism.ngrok-free.dev/webhook/atelier-transcribe';
+  var TRANSCRIBE_URL='/api/voice';
   var ICON_PLAY='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
   var ICON_PAUSE='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
   var voiceUrls={}, recState=null;   /* audio is kept for this session only; transcripts are what get saved */
@@ -533,8 +542,8 @@ html.embed .hint{display:none}
   function transcribe(blob){
     var fd=new FormData(),ext=blob.type.indexOf('wav')>-1?'wav':blob.type.indexOf('mp4')>-1?'m4a':blob.type.indexOf('ogg')>-1?'ogg':'webm';
     fd.append('audio',blob,'voice.'+ext);
-    return fetch(TRANSCRIBE_URL,{method:'POST',headers:{'ngrok-skip-browser-warning':'1'},body:fd})
-      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text()})
+    return fetch(TRANSCRIBE_URL,{method:'POST',body:fd})
+      .then(function(r){if(!r.ok)return failFrom(r);return r.text()})
       .then(function(t){var out=t;try{var j=JSON.parse(t);if(Array.isArray(j))j=j[0];out=j.text||j.transcript||j.message||''}catch(e){}return String(out).trim()});
   }
   function sendVoice(blob,secs){
@@ -558,7 +567,7 @@ html.embed .hint{display:none}
       var i=c.messages.indexOf(m);if(i>-1)c.messages.splice(i,1);
       if(!c.messages.length){state.chats=state.chats.filter(function(x){return x.id!==c.id});state.active=null}
       save();setBusy(false);render();
-      hintFlash(/^HTTP/.test(err&&err.message)?'Transcription is unavailable right now. Try again in a minute.':"Couldn't make out that recording. Try again or type it.");
+      hintFlash((err&&err.userMessage)||(/^HTTP/.test(err&&err.message)?'Transcription is unavailable right now. Try again in a minute.':"Couldn't make out that recording. Try again or type it."));
     });
   }
   micBtn.onclick=function(){if(recState)stopRec(false);else startRec()};

@@ -1,2 +1,5 @@
 flask>=3.0
 requests>=2.31
+# Production server for Linux hosts (the Flask dev server is for your PC only):
+#   gunicorn -w 1 --threads 8 -b 127.0.0.1:5000 app:app
+gunicorn>=22; sys_platform != "win32"

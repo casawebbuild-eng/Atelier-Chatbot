@@ -1,43 +1,72 @@
+"""Atelier server: serves the pages, proxies the assistant to n8n, powers the admin API.
+
+Every secret and every address comes from an environment variable. Nothing sensitive lives in this file.
+Required:  ATELIER_ADMIN_KEY, SUPABASE_SERVICE_KEY, N8N_BASE_URL, N8N_AUTH
+Optional:  ATELIER_DEBUG=1 (local development only), ATELIER_TRUST_PROXY=1 (behind a reverse proxy),
+           ATELIER_DAILY_CAP, ATELIER_SITE_URL, SUPABASE_URL
+"""
 import hmac
 import json
 import os
 import re
-from pathlib import Path
+import threading
+import time
 from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from flask import Flask, request, Response, redirect, jsonify, send_from_directory
 
-N8N_URL = "https://science-footgear-darwinism.ngrok-free.dev/webhook/atelier"
-KB_URL = "https://science-footgear-darwinism.ngrok-free.dev/webhook/atelier-kb"
-SITE_URL = "http://atelier.localhost:5000"
 
-# Supabase project that holds the knowledge base. The service key is a SECRET: keep it in an
-# environment variable, never in this file (OneDrive syncs it).
-#   setx SUPABASE_SERVICE_KEY "the service_role key from Supabase > Project Settings > API Keys"
+def env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+# ---------------------------------------------------------------- settings (all from the environment)
+SITE_URL = os.environ.get("ATELIER_SITE_URL", "http://atelier.localhost:5000").rstrip("/")
+
+# n8n: the base address of your webhooks, e.g. https://your-n8n.example.com/webhook
+#   setx N8N_BASE_URL "https://your-n8n.example.com/webhook"
+# N8N_AUTH is the secret header n8n's Header Auth credential expects, as Name:value
+#   setx N8N_AUTH "X-Atelier-Key:a-long-random-value"
+N8N_BASE = os.environ.get("N8N_BASE_URL", "").rstrip("/")
+N8N_AUTH = os.environ.get("N8N_AUTH") or os.environ.get("N8N_CHAT_AUTH", "")
+
+# Supabase project that holds the knowledge base. The service key is a SECRET.
+#   setx SUPABASE_SERVICE_KEY "the service_role / secret key from Supabase > Project Settings > API Keys"
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://grcoqeailpiptijxkmnw.supabase.co").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
-# Shared secret for the admin page. Set it once in PowerShell, then open a NEW terminal:
-#   setx ATELIER_ADMIN_KEY "your-long-random-key"
-# The same value goes into n8n as the Header Auth credential (name: X-Admin-Key).
+# Password for the admin page (also the Header Auth value of the KB Ingest webhook in n8n).
+#   setx ATELIER_ADMIN_KEY "a-long-random-string"
 ADMIN_KEY = os.environ.get("ATELIER_ADMIN_KEY", "")
-MAX_CHARS = 200_000
 
-# Only needed if the n8n "Chat" webhook has Header Auth switched on. Give the header exactly as
-# "Name:value" (the same Name and Value as the credential in n8n), then open a NEW terminal:
-#   setx N8N_CHAT_AUTH "X-Chat-Key:the-secret-value"
-N8N_CHAT_AUTH = os.environ.get("N8N_CHAT_AUTH", "")
+DEBUG = os.environ.get("ATELIER_DEBUG") == "1"              # never on a public server
+TRUST_PROXY = os.environ.get("ATELIER_TRUST_PROXY") == "1"   # only behind your own reverse proxy
+DAILY_CAP = env_int("ATELIER_DAILY_CAP", 1500)               # AI requests a day, all visitors together
 
-# Brands: one JSON file per client in the brands/ folder, opened at /c/<name>.
-# There is deliberately no default brand: a mistyped name must never answer as the wrong business.
+# ---------------------------------------------------------------- limits
+MIN_ADMIN_KEY = 24
+CHAT_PER_MIN = 20          # per visitor
+MEDIA_PER_MIN = 8          # voice notes and images, per visitor
+ADMIN_FAILS = 8            # wrong admin keys from one address ...
+ADMIN_FAIL_WINDOW = 600    # ... within this many seconds locks it out
+MAX_MESSAGE = 4000
+MAX_HISTORY = 24000
+MAX_CHARS = 200_000        # one knowledge document
+MAX_UPLOAD = 6 * 1024 * 1024
+
 HEX = re.compile(r"^#[0-9a-fA-F]{3,8}$")
 ORIGIN = re.compile(r"^https?://(\*\.)?[A-Za-z0-9.\-]+(:\d{1,5})?$")
 FONT_STACK = re.compile(r"^[A-Za-z0-9 ,'\"\-]{1,120}$")
 FONTS_URL = "https://fonts.googleapis.com/css2?"
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
 
 def slug(value):
@@ -49,6 +78,103 @@ def text(value, limit):
     return str(value).strip()[:limit] if ok else ""
 
 
+# ---------------------------------------------------------------- who is asking, and how often
+_lock = threading.Lock()
+_hits = {}          # (bucket, address) -> request times
+_admin_fails = {}   # address -> wrong-key times
+_daily = {"day": "", "n": 0}
+
+
+def is_https():
+    return request.is_secure or (TRUST_PROXY and request.headers.get("X-Forwarded-Proto", "").lower() == "https")
+
+
+def client_ip():
+    if TRUST_PROXY:  # only believe X-Forwarded-For when your own proxy sets it
+        first = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if first:
+            return first
+    return request.remote_addr or "?"
+
+
+def too_many(bucket, limit, window):
+    """0 if the request may go ahead, otherwise how many seconds to wait."""
+    now, key = time.time(), (bucket, client_ip())
+    with _lock:
+        if len(_hits) > 4000:
+            for k in [k for k, v in _hits.items() if not v or now - v[-1] > 3600]:
+                del _hits[k]
+        recent = [t for t in _hits.get(key, []) if now - t < window]
+        if len(recent) >= limit:
+            _hits[key] = recent
+            return int(window - (now - recent[0])) + 1
+        recent.append(now)
+        _hits[key] = recent
+    return 0
+
+
+def daily_used(bump=False):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with _lock:
+        if _daily["day"] != today:
+            _daily.update(day=today, n=0)
+        if bump:
+            _daily["n"] += 1
+        return _daily["n"]
+
+
+def limited(wait, message):
+    resp = jsonify(error=message)
+    resp.headers["Retry-After"] = str(wait)
+    return resp, 429
+
+
+def public_gate(bucket, per_minute):
+    """Checks every public call (chat, voice, image). Returns an error response or None."""
+    origin = request.headers.get("Origin")
+    if origin and urlparse(origin).netloc != request.host:  # a browser on another website
+        return jsonify(error="Requests from other websites are not allowed."), 403
+    wait = too_many(bucket, per_minute, 60)
+    if wait:
+        return limited(wait, f"Too many requests. Please wait {wait} seconds and try again.")
+    if DAILY_CAP and daily_used() >= DAILY_CAP:
+        return limited(3600, "The daily limit has been reached. Please try again tomorrow.")
+    daily_used(bump=True)
+    return None
+
+
+# ---------------------------------------------------------------- security headers on every response
+CSP_REPORT_ONLY = (
+    "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+    "img-src 'self' data: blob:; media-src 'self' blob: data:; connect-src 'self' https://cdn.jsdelivr.net; "
+    "worker-src 'self' blob: https://cdn.jsdelivr.net; frame-src 'self'; object-src 'none'; "
+    "base-uri 'none'; form-action 'self'"
+)
+
+
+@app.after_request
+def security_headers(resp):
+    h = resp.headers
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    h.setdefault("Permissions-Policy", "camera=(), geolocation=(), payment=(), usb=()")
+    if resp.mimetype == "text/html":
+        # Report-only: browsers list anything it would block in the console, and nothing breaks.
+        h.setdefault("Content-Security-Policy-Report-Only", CSP_REPORT_ONLY)
+    if request.path.startswith("/api/") or request.path == "/admin":
+        h["Cache-Control"] = "no-store"
+    if is_https():
+        h.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return resp
+
+
+@app.errorhandler(413)
+def too_big(_):
+    return jsonify(error="That upload is too large."), 413
+
+
+# ---------------------------------------------------------------- brands
 def read_brand(name):
     """The brand file as a dict, or None. Read on every request, so edits show without a restart."""
     name = slug(name)
@@ -102,6 +228,20 @@ def public_brand(name, data):
     return out
 
 
+def frame_ancestors(brand_data):
+    """Which sites may show this brand's chat in an iframe: itself plus the brand's allowedOrigins."""
+    listed = brand_data.get("allowedOrigins") if isinstance(brand_data, dict) else None
+    ok = [o.strip() for o in (listed if isinstance(listed, list) else []) if isinstance(o, str) and ORIGIN.match(o.strip())]
+    return " ".join(["'self'"] + ok)
+
+
+def serve_html(name, ancestors="'self'"):
+    resp = send_from_directory(app.root_path, name)
+    resp.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
+    return resp
+
+
+# ---------------------------------------------------------------- pages
 @app.before_request
 def use_friendly_name():
     # Anyone who opens the raw address gets sent to the named one.
@@ -133,27 +273,6 @@ def embed_demo():
     return serve_html("embed-demo.html")
 
 
-def frame_ancestors(brand_data):
-    """Which sites may show this brand's chat in an iframe: itself plus the brand's allowedOrigins."""
-    listed = brand_data.get("allowedOrigins") if isinstance(brand_data, dict) else None
-    ok = [o.strip() for o in (listed if isinstance(listed, list) else []) if isinstance(o, str) and ORIGIN.match(o.strip())]
-    return " ".join(["'self'"] + ok)
-
-
-def serve_html(name, ancestors="'self'"):
-    resp = send_from_directory(app.root_path, name)
-    resp.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
-    return resp
-
-
-def chat_headers():
-    headers = {"ngrok-skip-browser-warning": "1"}
-    name, sep, value = N8N_CHAT_AUTH.partition(":")
-    if sep and name.strip() and value.strip():
-        headers[name.strip()] = value.strip()
-    return headers
-
-
 @app.get("/c/<brand>")
 def brand_page(brand):
     data = read_brand(brand)
@@ -173,35 +292,122 @@ def brand_api():
     return resp, status
 
 
+# ---------------------------------------------------------------- the assistant (public, so every call is checked)
+def n8n_headers():
+    headers = {"ngrok-skip-browser-warning": "1"}
+    name, sep, value = N8N_AUTH.partition(":")
+    if sep and name.strip() and value.strip():
+        headers[name.strip()] = value.strip()
+    return headers
+
+
+def to_n8n(path, **kwargs):
+    """Calls an n8n webhook. Visitors only ever see a generic error: never an address or a stack trace."""
+    if not N8N_BASE:
+        app.logger.error("N8N_BASE_URL is not set, so nothing can be sent to n8n.")
+        return jsonify(error="The assistant isn't set up yet."), 503
+    try:
+        r = requests.post(f"{N8N_BASE}/{path}", headers=n8n_headers(), timeout=120, **kwargs)
+    except requests.RequestException as e:
+        app.logger.error("Cannot reach n8n for %s: %s", path, e)
+        return jsonify(error="The assistant is unreachable right now. Please try again in a moment."), 502
+    if not r.ok:
+        if r.status_code in (401, 403):
+            app.logger.error("n8n refused /%s (HTTP %s). Check that webhook in n8n: Authentication must be Header Auth "
+                             "with the same Name:value as N8N_AUTH, 'Ignore Bots' must be OFF (n8n treats Python "
+                             "scripts as bots), and the workflow must be republished.", path, r.status_code)
+        else:
+            app.logger.error("n8n answered /%s with HTTP %s", path, r.status_code)
+        return jsonify(error="The assistant couldn't answer right now. Please try again."), 502
+    return Response(r.content, status=200, content_type=r.headers.get("Content-Type", "text/plain"))
+
+
 @app.post("/api/chat")
 def chat():
+    if (bad := public_gate("chat", CHAT_PER_MIN)):
+        return bad
     body = request.get_json(silent=True)
     body = body if isinstance(body, dict) else {}
-    found = get_brand(body.pop("brand", None))
+    found = get_brand(body.get("brand"))
     if found is None:
         return jsonify(error="Unknown brand."), 400
     _, brand = found
-    # The browser can't choose these: they come from the brand file.
-    body["client"] = text(brand.get("client"), 60)
-    body["persona"] = text(brand.get("persona"), 4000)
-    try:
-        r = requests.post(
-            N8N_URL,
-            json=body,
-            headers=chat_headers(),
-            timeout=120,
-        )
-    except requests.RequestException as e:
-        return Response(f"Cannot reach n8n: {e}", status=502)
-    if r.status_code in (401, 403):
-        app.logger.error("n8n refused the chat request (HTTP %s). Check the Chat webhook in n8n: "
-                         "(1) Options > 'Ignore Bots' must be OFF, because n8n treats Python scripts as bots; "
-                         "(2) if Authentication is Header Auth, set N8N_CHAT_AUTH to its header as Name:value; "
-                         "(3) republish the workflow.", r.status_code)
-    return Response(r.content, status=r.status_code,
-                    content_type=r.headers.get("Content-Type", "text/plain"))
+    message = text(body.get("message"), MAX_MESSAGE)
+    if not message:
+        return jsonify(error="There is no message to send."), 400
+    # Only these fields go on to n8n. The persona and knowledge id come from the brand file, never the browser.
+    payload = {
+        "message": message,
+        "history": text(body.get("history"), MAX_HISTORY),
+        "isFirst": bool(body.get("isFirst")),
+        "chatId": text(body.get("chatId"), 64),
+        "sessionId": text(body.get("sessionId"), 64),
+        "client": text(brand.get("client"), 60),
+        "persona": text(brand.get("persona"), 4000),
+    }
+    return to_n8n("atelier", json=payload)
 
 
+def sniff_audio(data):
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "audio/wav", "wav"
+    if data[:4] == b"\x1a\x45\xdf\xa3":
+        return "audio/webm", "webm"
+    if data[4:8] == b"ftyp":
+        return "audio/mp4", "m4a"
+    if data[:4] == b"OggS":
+        return "audio/ogg", "ogg"
+    return None
+
+
+def sniff_image(data):
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg", "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png", "png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp", "webp"
+    return None
+
+
+def read_upload(field, sniff):
+    """(bytes, mime, ext) of a valid upload, or (None, error response). Checked by file signature, not by name."""
+    f = request.files.get(field)
+    data = f.read(MAX_UPLOAD + 1) if f else b""
+    if not data:
+        return None, (jsonify(error="No file was received."), 400)
+    if len(data) > MAX_UPLOAD:
+        return None, (jsonify(error="That file is too large."), 413)
+    kind = sniff(data)
+    if kind is None:
+        return None, (jsonify(error="That file type isn't supported."), 415)
+    return (data, *kind), None
+
+
+@app.post("/api/voice")
+def voice():
+    if (bad := public_gate("voice", MEDIA_PER_MIN)):
+        return bad
+    upload, err = read_upload("audio", sniff_audio)
+    if err:
+        return err
+    data, mime, ext = upload
+    return to_n8n("atelier-transcribe", files={"audio": (f"voice.{ext}", data, mime)})
+
+
+@app.post("/api/image")
+def image():
+    if (bad := public_gate("image", MEDIA_PER_MIN)):
+        return bad
+    upload, err = read_upload("image", sniff_image)
+    if err:
+        return err
+    data, mime, ext = upload
+    return to_n8n("atelier-image", files={"image": (f"image.{ext}", data, mime)},
+                  data={"message": text(request.form.get("message"), 2000)})
+
+
+# ---------------------------------------------------------------- admin (needs the admin key)
 def sb(method, path, extra_headers=None, **kwargs):
     """Call Supabase's REST API (PostgREST) with the service key."""
     headers = {"apikey": SUPABASE_KEY}
@@ -211,12 +417,26 @@ def sb(method, path, extra_headers=None, **kwargs):
     return requests.request(method, f"{SUPABASE_URL}/rest/v1/{path}", headers=headers, timeout=30, **kwargs)
 
 
+def admin_locked():
+    now, ip = time.time(), client_ip()
+    with _lock:
+        recent = [t for t in _admin_fails.get(ip, []) if now - t < ADMIN_FAIL_WINDOW]
+        _admin_fails[ip] = recent
+        return int(ADMIN_FAIL_WINDOW - (now - recent[0])) + 1 if len(recent) >= ADMIN_FAILS else 0
+
+
 def guard(need_db=True):
     """Returns an error response if the request may not use the admin API, else None."""
     if not ADMIN_KEY:
         return jsonify(error="The server has no admin key yet. Set ATELIER_ADMIN_KEY and restart app.py."), 503
+    if len(ADMIN_KEY) < MIN_ADMIN_KEY:
+        return jsonify(error=f"The admin key is too short. Use at least {MIN_ADMIN_KEY} characters."), 503
+    if (wait := admin_locked()):
+        return limited(wait, "Too many wrong keys. This address is locked for a few minutes.")
     sent = request.headers.get("X-Admin-Key", "")
     if not hmac.compare_digest(sent.encode(), ADMIN_KEY.encode()):
+        with _lock:
+            _admin_fails.setdefault(client_ip(), []).append(time.time())
         return jsonify(error="Wrong admin key."), 401
     if need_db and not SUPABASE_KEY:
         return jsonify(error="The server has no Supabase key yet. Set SUPABASE_SERVICE_KEY and restart app.py."), 503
@@ -224,7 +444,8 @@ def guard(need_db=True):
 
 
 def db_error(e):
-    return jsonify(error=f"Cannot reach the database: {e}"), 502
+    app.logger.error("Database call failed: %s", e)
+    return jsonify(error="Cannot reach the database. Check the Supabase address and key."), 502
 
 
 @app.get("/api/brands")
@@ -297,6 +518,8 @@ def save_knowledge():
     """Admin page -> here -> n8n (chunks + embeddings), then the original text is kept for editing."""
     if (bad := guard()):
         return bad
+    if not N8N_BASE:
+        return jsonify(error="The server has no n8n address yet. Set N8N_BASE_URL and restart app.py."), 503
 
     data = request.get_json(silent=True) or {}
     client, doc = slug(data.get("client")), slug(data.get("doc"))
@@ -310,13 +533,14 @@ def save_knowledge():
 
     try:
         r = requests.post(
-            KB_URL,
+            f"{N8N_BASE}/atelier-kb",
             json={"client": client, "doc": doc, "content": content},
             headers={"X-Admin-Key": ADMIN_KEY, "ngrok-skip-browser-warning": "1"},
             timeout=180,
         )
     except requests.RequestException as e:
-        return jsonify(error=f"Cannot reach n8n: {e}"), 502
+        app.logger.error("Cannot reach n8n for atelier-kb: %s", e)
+        return jsonify(error="Cannot reach n8n. Check N8N_BASE_URL and that n8n is running."), 502
     if not r.ok:
         return jsonify(error=f"The knowledge workflow failed (n8n returned HTTP {r.status_code}). "
                              "Open KB Ingest in n8n, go to Executions and check the newest run."), 502
@@ -334,9 +558,86 @@ def save_knowledge():
     return jsonify(ok=True, client=client, doc=doc, chars=len(content))
 
 
+# ---------------------------------------------------------------- the 20-point security checklist, live
+def security_report():
+    """Each item is (title, status, note). status: ok = verified, warn = fix it, todo = your move, info = a note."""
+    root = Path(app.root_path)
+    missing = [n for n, v in (("ATELIER_ADMIN_KEY", ADMIN_KEY), ("SUPABASE_SERVICE_KEY", SUPABASE_KEY),
+                              ("N8N_BASE_URL", N8N_BASE), ("N8N_AUTH", N8N_AUTH)) if not v]
+    cfg = root / ".git" / "config"
+    if not cfg.is_file():
+        git_item = ("info", "No git folder here, which is normal on a deployed server. On your PC: python tools/check_secrets.py --all")
+    elif "hookspath" in cfg.read_text(errors="ignore").lower() and (root / ".githooks" / "pre-commit").is_file():
+        git_item = ("ok", "A pre-commit scan blocks any commit that contains a key or a tunnel address.")
+    else:
+        git_item = ("todo", "Turn on the commit scan once: git config core.hooksPath .githooks")
+
+    placeholders = []
+    for f in sorted((root / "brands").glob("*.json")):
+        data = read_brand(f.stem) or {}
+        if any(".example" in str(o) for o in (data.get("allowedOrigins") or [])):
+            placeholders.append(f.stem)
+    local = urlparse(SITE_URL).hostname in ("localhost", "127.0.0.1") or str(urlparse(SITE_URL).hostname).endswith(".localhost")
+    prod_issues = []
+    if DEBUG:
+        prod_issues.append("debug mode is on")
+    if placeholders:
+        prod_issues.append("placeholder allowedOrigins in: " + ", ".join(placeholders))
+    if not local and SITE_URL.startswith("http://"):
+        prod_issues.append("ATELIER_SITE_URL is plain http")
+    if missing:
+        prod_issues.append("missing settings: " + ", ".join(missing))
+
+    if is_https():
+        https_item = ("ok", "This page was served over HTTPS, and browsers are told to keep using it.")
+    elif local or request.host.split(":")[0] in ("localhost", "127.0.0.1") or request.host.split(":")[0].endswith(".localhost"):
+        https_item = ("info", "Plain HTTP is fine on this PC. A public site must be HTTPS: the microphone needs it too.")
+    else:
+        https_item = ("warn", "This site is on plain HTTP. Put it behind HTTPS before real visitors use it.")
+
+    used = daily_used()
+    items = [
+        ("Hide API keys", "ok", "Every key and address is read from an environment variable. None is in the code."),
+        ("Check env variables", "ok" if not missing else "warn",
+         "All four settings are in place." if not missing else "Not set: " + ", ".join(missing)),
+        ("Check keys in git", *git_item),
+        ("Protect admin routes", "ok", f"Every admin route needs the key. {ADMIN_FAILS} wrong tries lock that address for {ADMIN_FAIL_WINDOW // 60} minutes."),
+        ("Add auth", "ok" if len(ADMIN_KEY) >= MIN_ADMIN_KEY else "warn",
+         f"The admin key is {len(ADMIN_KEY)} characters." if len(ADMIN_KEY) >= MIN_ADMIN_KEY
+         else f"The admin key is shorter than {MIN_ADMIN_KEY} characters. Make a longer one."),
+        ("Check user permissions", "warn", "One admin key reaches every client. Use one Supabase project per client before taking a second."),
+        ("Sanitize user inputs", "ok", f"Messages are capped at {MAX_MESSAGE:,} characters, names are reduced to letters, digits and hyphens, and only listed fields reach n8n."),
+        ("Protect against XSS", "ok", "Replies are sanitized, everything else is written as plain text, and a strict content policy runs in report-only mode."),
+        ("Protect against SQL injection", "ok", "No SQL is built from visitor input. The database is reached through Supabase's REST API with encoded values."),
+        ("Check DB rules", "info", "Row security is on for every table with no public policy (db/schema.sql). Re-check in Supabase > Advisors after schema changes."),
+        ("Add rate limiting", "ok", f"Chat: {CHAT_PER_MIN} a minute. Voice and images: {MEDIA_PER_MIN} a minute. Per visitor address."),
+        ("Set a spend cap", "info", f"App-wide cap: {DAILY_CAP:,} AI requests a day ({used:,} used today). Also set a budget alert in Google AI Studio or Cloud Billing."),
+        ("Secure file uploads", "ok", f"Voice and image files are checked by file signature and limited to {MAX_UPLOAD // (1024 * 1024)} MB."),
+        ("CSRF protection", "ok", "No cookies are used. The admin key travels in a header other sites can't send, and chat calls from other sites are refused."),
+        ("Check CORS settings", "todo", "Only /api/brand is open to other sites (public wording and colours). Switch CORS off on the three n8n webhooks: the browser no longer calls them."),
+        ("Enable HTTPS", *https_item),
+        ("Add security headers", "ok", "nosniff, referrer policy, permissions policy, framing rules per client, and HSTS on HTTPS."),
+        ("Secure cookies", "ok", "The app sets no cookies."),
+        ("Disable debug mode", "ok" if not DEBUG else "warn",
+         "Debug mode is off." if not DEBUG else "Debug mode is ON. Never run it on a public server."),
+        ("Check prod settings", "ok" if not prod_issues else ("info" if local and not missing and not DEBUG else "warn"),
+         "Nothing left over from development." if not prod_issues else ("; ".join(prod_issues)[:1].upper() + "; ".join(prod_issues)[1:]) + "."),
+    ]
+    counts = {k: sum(1 for i in items if i[1] == k) for k in ("ok", "warn", "todo", "info")}
+    return [{"n": i + 1, "title": t, "status": s, "note": n} for i, (t, s, n) in enumerate(items)], counts
+
+
+@app.get("/api/security")
+def security():
+    if (bad := guard(need_db=False)):
+        return bad
+    items, counts = security_report()
+    return jsonify(items=items, counts=counts)
+
+
 if __name__ == "__main__":
-    # With debug=True Flask starts twice; only announce from the reloaded child.
-    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    # With debug on, Flask starts twice; announce once, from the reloaded child.
+    if not DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         print()
         print(f"  Knowledge admin:   {SITE_URL}/admin")
         names = sorted(f.stem for f in (Path(app.root_path) / "brands").glob("*.json"))
@@ -345,11 +646,11 @@ if __name__ == "__main__":
         if not names:
             print("  No brand files found. Add one to the brands folder, e.g. brands/my-client.json")
         print(f"  Widget demo:       {SITE_URL}/embed-demo")
-        if not ADMIN_KEY:
-            print("  Note: ATELIER_ADMIN_KEY is not set, so the admin page can't be used yet.")
-        if not N8N_CHAT_AUTH:
-            print("  Chat webhook auth: none configured (fine unless the n8n Chat webhook has authentication on)")
-        if not SUPABASE_KEY:
-            print("  Note: SUPABASE_SERVICE_KEY is not set, so the admin page can't list or edit knowledge yet.")
+        with app.test_request_context("/"):
+            _items, _counts = security_report()
+        print(f"  Security checklist: {_counts['ok']} of 20 verified, {_counts['warn']} to fix, {_counts['todo']} for you to do")
+        for _i in _items:
+            if _i["status"] == "warn":
+                print(f"    ! {_i['title']}: {_i['note']}")
         print()
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    app.run(host=os.environ.get("ATELIER_HOST", "127.0.0.1"), port=env_int("PORT", 5000), debug=DEBUG)

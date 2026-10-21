@@ -128,6 +128,20 @@ textarea{min-height:280px;resize:vertical;line-height:1.6}
 #status.pop{animation:pop .45s cubic-bezier(.2,.9,.3,1.3)}
 @keyframes pop{from{opacity:0;transform:translateY(6px) scale(.98)}to{opacity:1;transform:none}}
 
+/* security checklist */
+.secbar{height:6px;border-radius:999px;background:var(--line);overflow:hidden;margin:2px 0 14px}
+.secbar i{display:block;height:100%;width:0;border-radius:999px;background:var(--ok);transition:width .8s cubic-bezier(.2,.9,.3,1)}
+.seclegend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12.5px;color:var(--muted);margin-bottom:16px}
+.seclegend span{display:inline-flex;align-items:center;gap:7px}
+.seclist{border:1px solid var(--line);border-radius:18px;overflow:hidden}
+.sec{display:grid;grid-template-columns:34px 14px 1fr;gap:12px;align-items:start;padding:13px 18px;background:var(--bg);opacity:0;animation:rise .45s cubic-bezier(.2,.8,.2,1) forwards}
+.sec+.sec{border-top:1px solid var(--line)}
+.sec .num{font:500 12px var(--sans);color:var(--muted);padding-top:3px;font-variant-numeric:tabular-nums}
+.dot{width:10px;height:10px;border-radius:50%;margin-top:7px;background:var(--muted)}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--err)}.dot.todo{background:var(--accent)}.dot.info{background:var(--muted);opacity:.6}
+.sec b{display:block;font-family:var(--serif);font-weight:400;font-size:17px;letter-spacing:-.01em}
+.sec span.n{display:block;font-size:13px;color:var(--muted);margin-top:2px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 /* test chat: docked on wide screens, a floating panel on narrow ones */
 body{transition:padding-right .35s cubic-bezier(.2,.9,.3,1)}
 .chat-fab{position:fixed;right:24px;bottom:calc(24px + env(safe-area-inset-bottom,0px));z-index:40;display:inline-flex;align-items:center;gap:10px;padding:14px 22px 14px 18px;border-radius:999px;background:var(--accent);color:var(--accent-ink);font-weight:600;box-shadow:0 18px 36px -16px color-mix(in srgb,var(--accent) 85%,transparent),0 2px 6px rgba(0,0,0,.2);transition:transform .25s cubic-bezier(.2,.9,.3,1.3),opacity .2s}
@@ -189,6 +203,20 @@ body.chat-open .toast{left:calc(50% - 200px)}
       <div class="sp"><button class="link" id="refresh" type="button">Refresh</button><button class="pill" id="newDoc" type="button">New document</button></div>
     </div>
     <div id="library" aria-live="polite"><p class="lib-msg">Paste your admin key above to see what’s stored.</p></div>
+  </section>
+
+  <section class="card rise" id="securityCard" style="animation-delay:.3s" aria-labelledby="secTitle">
+    <div class="card-h">
+      <h2 id="secTitle">Security checklist</h2>
+      <span class="stats" id="secStats"></span>
+      <div class="sp"><button class="link" id="secRefresh" type="button">Re-check</button></div>
+    </div>
+    <div class="secbar" aria-hidden="true"><i id="secFill"></i></div>
+    <div class="seclegend" aria-hidden="true">
+      <span><i class="dot ok"></i>Verified</span><span><i class="dot warn"></i>Fix this</span>
+      <span><i class="dot todo"></i>Your move</span><span><i class="dot info"></i>Good to know</span>
+    </div>
+    <div id="secList" class="seclist" aria-live="polite"><p class="lib-msg">Unlock the page to run the checks.</p></div>
   </section>
 
   <section class="card rise" id="editor" style="animation-delay:.26s">
@@ -308,7 +336,7 @@ body.chat-open .toast{left:calc(50% - 200px)}
     if(!items.length)libMsg('Loading…');
     try{
       var d=await api('/api/kb');items=d.items||[];store(KEYSTORE,key);
-      renderLibrary();fillLists();if(!brands.length)loadBrands();
+      renderLibrary();fillLists();if(!brands.length)loadBrands();loadSecurity();
       if(flashKey){var li=libEl.querySelector('[data-key="'+flashKey+'"]');if(li){li.classList.add('flash');li.scrollIntoView({block:'nearest'})}}
     }catch(e){
       items=[];
@@ -465,6 +493,30 @@ body.chat-open .toast{left:calc(50% - 200px)}
     root.dataset.theme=dark?'light':'dark';store(THEME,root.dataset.theme);
   };
   var th=read(THEME);if(th)document.documentElement.dataset.theme=th;
+
+  /* ---- security checklist ---- */
+  var SECLABEL={ok:'Verified',warn:'Fix this',todo:'Your move',info:'Good to know'};
+  async function loadSecurity(){
+    var list=$('secList');
+    if(!keyEl.value.trim()){list.innerHTML='<p class="lib-msg">Unlock the page to run the checks.</p>';$('secStats').textContent='';$('secFill').style.width='0';return}
+    try{
+      var d=await api('/api/security');list.innerHTML='';
+      d.items.forEach(function(it,i){
+        var row=document.createElement('div');row.className='sec';row.style.animationDelay=(i*25)+'ms';
+        var num=document.createElement('div');num.className='num';num.textContent=String(it.n).padStart(2,'0');
+        var dot=document.createElement('i');dot.className='dot '+it.status;
+        var box=document.createElement('div');
+        var vh=document.createElement('span');vh.className='vh';vh.textContent=SECLABEL[it.status]+': ';
+        var b=document.createElement('b');b.append(vh,document.createTextNode(it.title));
+        var n=document.createElement('span');n.className='n';n.textContent=it.note;
+        box.append(b,n);row.append(num,dot,box);list.appendChild(row);
+      });
+      var c=d.counts,total=d.items.length;
+      $('secStats').textContent=c.ok+' of '+total+' verified'+(c.warn?' · '+c.warn+' to fix':'')+(c.todo?' · '+c.todo+' for you':'');
+      $('secFill').style.width=Math.round(c.ok/total*100)+'%';
+    }catch(e){list.innerHTML='';var p=document.createElement('p');p.className='lib-msg err';p.textContent=e.status===401?'That admin key isn’t right.':(e.message||'Couldn’t run the checks.');list.appendChild(p)}
+  }
+  $('secRefresh').onclick=loadSecurity;
 
   /* ---- test chat ---- */
   var CHATSTORE='atelier.admin.chatopen', brands=[], chatBrand='', chatFrame=$('chatFrame'), brandSel=$('brandSel');

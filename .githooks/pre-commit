@@ -1,0 +1,9 @@
+#!/bin/sh
+# Blocks a commit that contains a key, a password or a tunnel address.
+# Turn it on once per copy of the repo:   git config core.hooksPath .githooks
+PY=$(command -v py || command -v python3 || command -v python)
+if [ -z "$PY" ]; then
+  echo "pre-commit: Python not found, so the secret scan was skipped."
+  exit 0
+fi
+exec "$PY" tools/check_secrets.py
