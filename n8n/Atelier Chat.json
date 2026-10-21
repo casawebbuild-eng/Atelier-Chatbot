@@ -1,0 +1,548 @@
+{
+  "name": "Atelier Chat",
+  "nodes": [
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Chat').first().json.body.persona || \"You are a helpful assistant.\" }}\n\n{{ $('Chat').first().json.body.client ? \"For every question about the business, call search_knowledge first and answer only from what it returns. Never invent prices, hours or details. If the knowledge base does not have the answer, say you do not have that information and suggest contacting the business. Politely decline questions unrelated to the business.\" : \"Answer helpfully from your own knowledge.\" }}\n\nFirst message of this chat: {{ $('Chat').item.json.body.isFirst }}\n\n{{ $('Chat').item.json.body.history ? \"Conversation so far:\\n\" + $('Chat').item.json.body.history + \"\\n\\n\" : \"\" }}\n\nUser: {{ $('Chat').item.json.body.message }}\n\n- RULES:\n\nWhen the answer is a plan, schedule, comparison, set of options, or any content with several attributes per item, present it as a markdown table: one header row, one row per item, short cells. Do not use bullet lists or nested lists for that kind of content. Plain conversational answers stay as short prose.\n",
+        "options": {
+          "systemMessage": "If \"First message of this chat\" is true, call 'Set Chat Title' once with a 2 to 5 word title in the user's language. \nOtherwise call it only if the user explicitly asks to rename the chat. Never mention the tool or the title in your reply.",
+          "returnIntermediateSteps": true
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        272,
+        112
+      ],
+      "id": "ebe7dd02-da66-42eb-b3d3-8e8eebcc8873",
+      "name": "AI Agent",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        192,
+        272
+      ],
+      "id": "632c1534-ee69-4c87-abb7-9d7cc9533718",
+      "name": "Google Gemini Chat Model",
+      "notesInFlow": false,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "wVzyMBlFJ4wp33tf",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "78b618d0-00cd-4367-a16a-0fe54db65323",
+              "name": "message",
+              "value": "={{ JSON.stringify($json).toLowerCase().includes(\"quota\") || JSON.stringify($json).includes(\"429\") ? \"Your quota has reached the limit. Please try again in a minute.\" : \"Something went wrong on my side. Please try again.\" }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        624,
+        208
+      ],
+      "id": "04ef7930-2578-40d2-945b-436d98f5c9f9",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "inputType": "binary",
+        "binaryPropertyName": "audio",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        272,
+        -176
+      ],
+      "id": "2d906ab3-4335-4f73-b2c6-bd6a22f9d949",
+      "name": "Transcribe a recording",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "wVzyMBlFJ4wp33tf",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7a4e3337-bc4c-4486-bb98-c7c556cb24fa",
+              "name": "text",
+              "value": "=   {{ ($json.content && $json.content.parts) ? $json.content.parts[0].text : ($json.candidates ? $json.candidates[0].content.parts[0].text : $json.text) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        496,
+        -176
+      ],
+      "id": "a30da2f9-802c-4c27-9c3e-8b5d72aa90fe",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7a4e3337-bc4c-4486-bb98-c7c556cb24fa",
+              "name": "message",
+              "value": "={{ ($json.content && $json.content.parts) ? $json.content.parts[0].text : ($json.candidates ? $json.candidates[0].content.parts[0].text : $json.text) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        496,
+        -400
+      ],
+      "id": "d59e6ed0-4898-4b31-b6a3-8c74d9c9bd1e",
+      "name": "Edit Fields2"
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "text": "={{ ($json.body.message || \"Describe this image.\") + \"\\n\\nAnswer in the user's language. Be concise and plain; use a markdown table only for structured comparisons.\" }}",
+        "inputType": "binary",
+        "binaryPropertyName": "image",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        272,
+        -400
+      ],
+      "id": "aecc7fb4-cd9a-4cf7-819a-2d407c7b99af",
+      "name": "Analyze an image",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "wVzyMBlFJ4wp33tf",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Voice Message AI",
+        "height": 208,
+        "width": 928,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -224
+      ],
+      "id": "b1f4e5ad-6809-4b6e-bca1-29f2d7a482b5",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## Chat AI",
+        "height": 576,
+        "width": 1040,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        0
+      ],
+      "id": "6c32f7cd-fdcf-44df-a473-74fb20756184",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## Image Analyzing AI\n",
+        "height": 224,
+        "width": 928,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -464
+      ],
+      "id": "666d2fc6-9b3d-4a90-ae59-d26abb44e601",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        848,
+        208
+      ],
+      "id": "47ecedff-92a4-4aff-888f-d9fec5c8eaac",
+      "name": "Something Wrong"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        624,
+        16
+      ],
+      "id": "f8e9d66f-e3fe-445c-ac65-9cec1204d654",
+      "name": "Successful"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "atelier-transcribe",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        48,
+        -176
+      ],
+      "id": "c1692c90-a7f2-4087-bc87-5e350d727a06",
+      "name": "Voice Message",
+      "webhookId": "39acdd34-1eaa-4f8f-9471-e485506c9b26"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "atelier-image",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        48,
+        -400
+      ],
+      "id": "33ff26d6-7586-4a4c-b8c1-31dfafdee4c6",
+      "name": "Image Analyzing",
+      "webhookId": "82449edf-4143-41cb-82cd-ec27efee3f15"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "atelier",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        48,
+        112
+      ],
+      "id": "39c29967-01dc-485b-8e31-901bd3ce9efb",
+      "name": "Chat",
+      "webhookId": "b2fcc301-5964-4113-8c8f-45c316d11b36"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        720,
+        -176
+      ],
+      "id": "6944b2ad-e386-4cb2-be59-d4e7bed496d7",
+      "name": "Response"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        720,
+        -400
+      ],
+      "id": "98552b60-b28b-45eb-876d-6398120fa060",
+      "name": "Response1"
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Searches the business's knowledge base: menu, prices, opening hours, reservations, allergens, parking, delivery. Use it for every question about the business.",
+        "tableName": {
+          "__rl": true,
+          "value": "documents",
+          "mode": "list",
+          "cachedResultName": "documents"
+        },
+        "options": {
+          "queryName": "match_documents",
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "client",
+                "value": "={{ $('Chat').first().json.body.client }}"
+              }
+            ]
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        336,
+        304
+      ],
+      "id": "35a32a32-4b67-446e-806b-1a288c1d8115",
+      "name": "Search Knowledge",
+      "credentials": {
+        "supabaseApi": {
+          "id": "hiQOydyXaWYqnZQk",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        432,
+        432
+      ],
+      "id": "c603b763-8d3a-4f9f-9ef3-b88afae88913",
+      "name": "Embeddings Google Gemini",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "wVzyMBlFJ4wp33tf",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Successful",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Something Wrong",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcribe a recording": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields2": {
+      "main": [
+        [
+          {
+            "node": "Response1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze an image": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Something Wrong": {
+      "main": [
+        []
+      ]
+    },
+    "Voice Message": {
+      "main": [
+        [
+          {
+            "node": "Transcribe a recording",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Analyzing": {
+      "main": [
+        [
+          {
+            "node": "Analyze an image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Knowledge": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Google Gemini": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Search Knowledge",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "versionId": "1e2d0988-3bbb-4fee-8113-5041a85b21de",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "bc22e18cc250d75e285f35fbdada6f3051bb26320731864c2a1639e4e344d214"
+  },
+  "nodeGroups": [],
+  "id": "kLcG5cIBmEWx6Yv2",
+  "tags": []
+}
