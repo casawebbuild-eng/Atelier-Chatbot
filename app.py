@@ -5,6 +5,7 @@ Required:  ATELIER_ADMIN_KEY, SUPABASE_SERVICE_KEY, N8N_BASE_URL, N8N_AUTH
 Optional:  ATELIER_DEBUG=1 (local development only), ATELIER_TRUST_PROXY=1 (behind a reverse proxy),
            ATELIER_DAILY_CAP, ATELIER_SITE_URL, SUPABASE_URL
 """
+import hashlib
 import hmac
 import json
 import os
@@ -16,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-from flask import Flask, request, Response, redirect, jsonify, send_from_directory
+from flask import Flask, request, Response, redirect, jsonify, send_from_directory, g
 
 
 def env_int(name, default):
@@ -425,19 +426,40 @@ def admin_locked():
         return int(ADMIN_FAIL_WINDOW - (now - recent[0])) + 1 if len(recent) >= ADMIN_FAILS else 0
 
 
-def guard(need_db=True):
-    """Returns an error response if the request may not use the admin API, else None."""
+def identify(sent):
+    """Who a key belongs to: {"role": "admin"}, {"role": "client", "client": slug}, or None.
+
+    Your admin key sees everything. A client key is stored only as a SHA-256 hash in that client's brand file
+    ("adminKeyHash"), so the file is safe to commit, and it unlocks that client's documents and nothing else."""
+    if hmac.compare_digest(sent.encode(), ADMIN_KEY.encode()):
+        return {"role": "admin", "client": None}
+    digest = hashlib.sha256(sent.encode()).hexdigest()
+    match = None
+    for f in sorted((Path(app.root_path) / "brands").glob("*.json")):
+        data = read_brand(f.stem) if slug(f.stem) == f.stem else None
+        stored, client = (data or {}).get("adminKeyHash"), text((data or {}).get("client"), 60)
+        if client and isinstance(stored, str) and len(stored) == 64 and hmac.compare_digest(digest, stored.lower()):
+            match = {"role": "client", "client": client}
+    return match
+
+
+def guard(need_db=True, admin_only=False):
+    """Returns an error response if the request may not use the admin API, else None.
+    On success g.who says who is asking."""
     if not ADMIN_KEY:
         return jsonify(error="The server has no admin key yet. Set ATELIER_ADMIN_KEY and restart app.py."), 503
     if len(ADMIN_KEY) < MIN_ADMIN_KEY:
         return jsonify(error=f"The admin key is too short. Use at least {MIN_ADMIN_KEY} characters."), 503
     if (wait := admin_locked()):
         return limited(wait, "Too many wrong keys. This address is locked for a few minutes.")
-    sent = request.headers.get("X-Admin-Key", "")
-    if not hmac.compare_digest(sent.encode(), ADMIN_KEY.encode()):
+    who = identify(request.headers.get("X-Admin-Key", ""))
+    if who is None:
         with _lock:
             _admin_fails.setdefault(client_ip(), []).append(time.time())
-        return jsonify(error="Wrong admin key."), 401
+        return jsonify(error="Wrong key."), 401
+    if admin_only and who["role"] != "admin":
+        return jsonify(error="That needs the admin key."), 403
+    g.who = who
     if need_db and not SUPABASE_KEY:
         return jsonify(error="The server has no Supabase key yet. Set SUPABASE_SERVICE_KEY and restart app.py."), 503
     return None
@@ -456,19 +478,33 @@ def list_brands():
     items = []
     for f in sorted((Path(app.root_path) / "brands").glob("*.json")):
         data = read_brand(f.stem) if slug(f.stem) == f.stem else None
-        if data is not None:
+        if data is not None and (g.who["role"] == "admin" or text(data.get("client"), 60) == g.who["client"]):
             items.append({"slug": f.stem, "name": text(data.get("name") or data.get("wordmark") or f.stem, 60),
                           "client": text(data.get("client"), 60)})
     return jsonify(items=items)
+
+
+@app.get("/api/me")
+def whoami():
+    if (bad := guard(need_db=False)):
+        return bad
+    return jsonify(role=g.who["role"], client=g.who["client"])
+
+
+def own_only(client):
+    """A client key may only touch its own client's documents."""
+    return g.who["role"] == "client" and client != g.who["client"]
 
 
 @app.get("/api/kb")
 def list_knowledge():
     if (bad := guard()):
         return bad
+    params = {"select": "client,doc,chars,chunks,updated_at", "order": "client.asc,doc.asc"}
+    if g.who["role"] == "client":
+        params["client"] = f"eq.{g.who['client']}"
     try:
-        r = sb("GET", "kb_overview", params={"select": "client,doc,chars,chunks,updated_at",
-                                             "order": "client.asc,doc.asc"})
+        r = sb("GET", "kb_overview", params=params)
     except requests.RequestException as e:
         return db_error(e)
     if not r.ok:
@@ -480,7 +516,7 @@ def list_knowledge():
 def get_knowledge(client, doc):
     if (bad := guard()):
         return bad
-    if slug(client) != client or slug(doc) != doc:
+    if slug(client) != client or slug(doc) != doc or own_only(client):
         return jsonify(error="Unknown document."), 404
     try:
         r = sb("GET", "kb_sources", params={"client": f"eq.{client}", "doc": f"eq.{doc}",
@@ -499,7 +535,7 @@ def get_knowledge(client, doc):
 def delete_knowledge(client, doc):
     if (bad := guard()):
         return bad
-    if slug(client) != client or slug(doc) != doc:
+    if slug(client) != client or slug(doc) != doc or own_only(client):
         return jsonify(error="Unknown document."), 404
     flt = {"client": f"eq.{client}", "doc": f"eq.{doc}"}
     try:
@@ -523,6 +559,8 @@ def save_knowledge():
 
     data = request.get_json(silent=True) or {}
     client, doc = slug(data.get("client")), slug(data.get("doc"))
+    if g.who["role"] == "client":
+        client = g.who["client"]  # whatever the page sent, a client key can only write to its own client
     content = str(data.get("content") or "").strip()
     if not client or not doc:
         return jsonify(error="A client and a document name are required."), 400
@@ -595,6 +633,19 @@ def security_report():
     else:
         https_item = ("warn", "This site is on plain HTTP. Put it behind HTTPS before real visitors use it.")
 
+    keyed, unkeyed = [], []
+    for f in sorted((root / "brands").glob("*.json")):
+        data = read_brand(f.stem) or {}
+        if text(data.get("client"), 60):
+            (keyed if isinstance(data.get("adminKeyHash"), str) and len(data["adminKeyHash"]) == 64 else unkeyed).append(f.stem)
+    if keyed and not unkeyed:
+        perms = ("ok", f"Each client signs in with their own key and only sees their own documents ({len(keyed)} set up). "
+                       "Your admin key stays with you. For the strongest split, give each client their own Supabase project.")
+    elif keyed:
+        perms = ("warn", "No client key yet for: " + ", ".join(unkeyed) + ". Make one: py tools/make_client_key.py <brand>")
+    else:
+        perms = ("warn", "Clients have no keys of their own, so the admin key would reach every client. "
+                         "Make one per client: py tools/make_client_key.py <brand>")
     used = daily_used()
     items = [
         ("Hide API keys", "ok", "Every key and address is read from an environment variable. None is in the code."),
@@ -605,7 +656,7 @@ def security_report():
         ("Add auth", "ok" if len(ADMIN_KEY) >= MIN_ADMIN_KEY else "warn",
          f"The admin key is {len(ADMIN_KEY)} characters." if len(ADMIN_KEY) >= MIN_ADMIN_KEY
          else f"The admin key is shorter than {MIN_ADMIN_KEY} characters. Make a longer one."),
-        ("Check user permissions", "warn", "One admin key reaches every client. Use one Supabase project per client before taking a second."),
+        ("Check user permissions", *perms),
         ("Sanitize user inputs", "ok", f"Messages are capped at {MAX_MESSAGE:,} characters, names are reduced to letters, digits and hyphens, and only listed fields reach n8n."),
         ("Protect against XSS", "ok", "Replies are sanitized, everything else is written as plain text, and a strict content policy runs in report-only mode."),
         ("Protect against SQL injection", "ok", "No SQL is built from visitor input. The database is reached through Supabase's REST API with encoded values."),
@@ -629,7 +680,7 @@ def security_report():
 
 @app.get("/api/security")
 def security():
-    if (bad := guard(need_db=False)):
+    if (bad := guard(need_db=False, admin_only=True)):
         return bad
     items, counts = security_report()
     return jsonify(items=items, counts=counts)

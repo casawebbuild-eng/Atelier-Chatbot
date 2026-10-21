@@ -37,6 +37,7 @@ reach the page.
 | `db/schema.sql` | Supabase tables, search function and view |
 | `n8n/` | Exported n8n workflows |
 | `tools/check_secrets.py` | Blocks commits that contain keys or tunnel addresses |
+| `tools/make_client_key.py` | Makes a client their own key for the admin page |
 | `tools/ship.py`, `ship.cmd` | One command to commit and push |
 | `.githooks/pre-commit` | Runs the secret scan on every commit |
 
@@ -81,7 +82,7 @@ resolve them, so use `127.0.0.1:5000` for command-line tests.
 
 | Variable | Needed | Purpose |
 |---|---|---|
-| `ATELIER_ADMIN_KEY` | yes | Password for the admin page (24+ characters). Must equal the KB Ingest Header Auth value. |
+| `ATELIER_ADMIN_KEY` | yes | Your own key for the admin page (24+ characters). Sees every client. Must equal the KB Ingest Header Auth value. |
 | `SUPABASE_SERVICE_KEY` | yes | Lets the server list, read and delete knowledge. |
 | `N8N_BASE_URL` | yes | Base address of your n8n webhooks, ending in `/webhook`. |
 | `N8N_AUTH` | yes | `Name:value` header that the chat, voice and image webhooks require. |
@@ -147,7 +148,8 @@ The admin page shows a live 20-point checklist (verified, fix this, your move). 
 
 - Secrets and addresses live in environment variables only. A pre-commit scan stops any commit that contains a
   key or a tunnel address. Turn it on once per copy of the repo: `git config core.hooksPath .githooks`
-- Admin routes need the key. Eight wrong keys lock an address for ten minutes.
+- Admin routes need a key. Your admin key sees every client. A client's own key (below) sees and edits only that
+  client's documents, and the server enforces it on every call. Eight wrong keys lock an address for ten minutes.
 - Public calls (chat, voice, image) are limited per visitor, capped per day for the whole app, and refused
   when they come from another website's browser.
 - Only listed fields reach n8n, messages are length-capped, and uploads are checked by file signature, not name.
@@ -156,8 +158,18 @@ The admin page shows a live 20-point checklist (verified, fix this, your move). 
   policy in report-only mode (browsers list anything it would block in the console).
 - No cookies are used, so there is nothing for CSRF to ride on.
 
-Still yours to do: HTTPS and `ATELIER_TRUST_PROXY=1` on a public host, a budget alert at Google, CORS off on the
-n8n webhooks, and one Supabase project per client before taking a second client.
+Still yours to do: HTTPS and `ATELIER_TRUST_PROXY=1` on a public host, a budget alert at Google, and CORS off on
+the n8n webhooks. For the strongest split between clients, give each their own Supabase project.
+
+## Give a client their own key
+
+```powershell
+py tools\make_client_key.py casa-atelier
+```
+
+It prints a key once and saves only its SHA-256 hash in `brands/casa-atelier.json` (safe to commit). Send the
+client the key and `<your-site>/admin`. Signed in with it, they see their own documents and a test chat, with the
+client name locked, and no security checklist. `--rotate` replaces a key, and the old one stops working.
 
 ## Production
 

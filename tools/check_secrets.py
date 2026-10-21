@@ -38,6 +38,9 @@ def scan_line(path, number, line, found):
     # n8n exports carry the instance's public identifier ("meta": {"instanceId": "<64 hex>"}). It is not a key.
     if re.search(r'"instanceId"\s*:', line):
         return
+    # A client key is stored only as a SHA-256 hash in the brand file ("adminKeyHash"). A hash is not the key.
+    if re.search(r'"adminKeyHash"\s*:', line):
+        return
     for label, rx in PATTERNS:
         m = rx.search(line)
         if m:

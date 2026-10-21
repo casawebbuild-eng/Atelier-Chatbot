@@ -128,6 +128,7 @@ textarea{min-height:280px;resize:vertical;line-height:1.6}
 #status.pop{animation:pop .45s cubic-bezier(.2,.9,.3,1.3)}
 @keyframes pop{from{opacity:0;transform:translateY(6px) scale(.98)}to{opacity:1;transform:none}}
 
+input[readonly]{opacity:.7;cursor:not-allowed}
 /* security checklist */
 .secbar{height:6px;border-radius:999px;background:var(--line);overflow:hidden;margin:2px 0 14px}
 .secbar i{display:block;height:100%;width:0;border-radius:999px;background:var(--ok);transition:width .8s cubic-bezier(.2,.9,.3,1)}
@@ -188,8 +189,9 @@ body.chat-open .toast{left:calc(50% - 200px)}
 
   <section class="card rise" style="animation-delay:.14s">
     <div class="keybar">
-      <label class="field"><span>Admin key</span>
-        <input type="password" id="key" autocomplete="off" placeholder="Paste the key once; this device remembers it">
+      <label class="field"><span>Access key</span>
+        <input type="password" id="key" autocomplete="off" placeholder="Paste your key once; this device remembers it">
+        <small id="whoami"></small>
       </label>
       <button class="pill go" id="unlock" type="button">Unlock</button>
       <button class="link go" id="forget" type="button">Forget key</button>
@@ -202,7 +204,7 @@ body.chat-open .toast{left:calc(50% - 200px)}
       <span class="stats" id="stats"></span>
       <div class="sp"><button class="link" id="refresh" type="button">Refresh</button><button class="pill" id="newDoc" type="button">New document</button></div>
     </div>
-    <div id="library" aria-live="polite"><p class="lib-msg">Paste your admin key above to see what’s stored.</p></div>
+    <div id="library" aria-live="polite"><p class="lib-msg">Paste your key above to see what’s stored.</p></div>
   </section>
 
   <section class="card rise" id="securityCard" style="animation-delay:.3s" aria-labelledby="secTitle">
@@ -332,15 +334,16 @@ body.chat-open .toast{left:calc(50% - 200px)}
   }
   async function loadLibrary(flashKey){
     var key=keyEl.value.trim();
-    if(!key){items=[];libMsg('Paste your admin key above to see what’s stored.');return}
+    if(!key){items=[];libMsg('Paste your key above to see what’s stored.');return}
     if(!items.length)libMsg('Loading…');
     try{
+      if(!me)await whoAmI();
       var d=await api('/api/kb');items=d.items||[];store(KEYSTORE,key);
       renderLibrary();fillLists();if(!brands.length)loadBrands();loadSecurity();
       if(flashKey){var li=libEl.querySelector('[data-key="'+flashKey+'"]');if(li){li.classList.add('flash');li.scrollIntoView({block:'nearest'})}}
     }catch(e){
       items=[];
-      libMsg(e.status===401?'That admin key isn’t right.':(e.message||'Couldn’t load the list.'),'err');
+      libMsg(e.status===401?'That key isn’t right.':(e.message||'Couldn’t load the list.'),'err');
       if(e.status===401)keyEl.focus();
     }
   }
@@ -382,7 +385,8 @@ body.chat-open .toast{left:calc(50% - 200px)}
     if(editing)$('bannerName').textContent='“'+editing.client+' / '+editing.doc+'”';
   }
   function resetEditor(keepClient){
-    editing=null;docEl.value='';contentEl.value='';if(!keepClient)clientEl.value='casa-demo';
+    editing=null;docEl.value='';contentEl.value='';if(!keepClient)clientEl.value=(me&&me.client)||'casa-demo';
+    if(me&&me.role==='client')clientEl.value=me.client;
     showBanner();resetDrop();refresh();say('');
   }
   $('stopEdit').onclick=function(){resetEditor(true);renderLibrary()};
@@ -460,7 +464,7 @@ body.chat-open .toast{left:calc(50% - 200px)}
   keyEl.value=read(KEYSTORE)||'';
   $('unlock').onclick=function(){loadLibrary()};
   keyEl.addEventListener('keydown',function(e){if(e.key==='Enter')loadLibrary()});
-  $('forget').onclick=function(){keyEl.value='';items=[];try{localStorage.removeItem(KEYSTORE)}catch(e){}libMsg('Paste your admin key above to see what’s stored.');toast('Key forgotten on this device.')};
+  $('forget').onclick=function(){keyEl.value='';items=[];me=null;applyRole();try{localStorage.removeItem(KEYSTORE)}catch(e){}libMsg('Paste your key above to see what’s stored.');toast('Key forgotten on this device.')};
 
   /* ---- save ---- */
   async function save(){
@@ -468,7 +472,7 @@ body.chat-open .toast{left:calc(50% - 200px)}
     if(!c||!d){say('Add a client and a document name first.','err');(c?docEl:clientEl).focus();return}
     if(!text){say('There’s nothing to save yet. Paste text or drop a file.','err');contentEl.focus();return}
     if(text.length>MAX_CHARS){say('That’s '+text.length.toLocaleString()+' characters. The limit is '+MAX_CHARS.toLocaleString()+'. Split it into several documents.','err');return}
-    if(!key){say('Paste your admin key at the top first.','err');keyEl.focus();return}
+    if(!key){say('Paste your key at the top first.','err');keyEl.focus();return}
     saveBtn.disabled=true;saveBtn.classList.add('busy');$('saveLabel').textContent='Saving…';
     say(text.length>20000?'Saving a large document. This can take a minute…':'');
     try{
@@ -478,7 +482,7 @@ body.chat-open .toast{left:calc(50% - 200px)}
       say('Saved. “'+d+'” for '+c+' now holds '+text.length.toLocaleString()+' characters, and anything stored there before is gone.','ok');
       await loadLibrary(rowKey(c,d));
     }catch(e){
-      say(e.status===401?'That admin key isn’t right.':(e.message||'Couldn’t reach the server. Is app.py still running?'),'err');
+      say(e.status===401?'That key isn’t right.':(e.message||'Couldn’t reach the server. Is app.py still running?'),'err');
       if(e.status===401)keyEl.focus();
     }
     saveBtn.disabled=false;saveBtn.classList.remove('busy');$('saveLabel').textContent='Save to knowledge base';
@@ -494,9 +498,21 @@ body.chat-open .toast{left:calc(50% - 200px)}
   };
   var th=read(THEME);if(th)document.documentElement.dataset.theme=th;
 
+  /* ---- who is signed in: the admin sees everything, a client sees only their own documents ---- */
+  var me=null;
+  function applyRole(){
+    var isClient=!!(me&&me.role==='client');
+    $('securityCard').hidden=isClient;
+    clientEl.readOnly=isClient;
+    if(isClient){clientEl.value=me.client;refresh()}
+    $('whoami').textContent=me?(isClient?'Signed in as '+me.client:'Signed in as admin'):'';
+  }
+  async function whoAmI(){try{me=await api('/api/me');applyRole()}catch(e){me=null;applyRole()}}
+
   /* ---- security checklist ---- */
   var SECLABEL={ok:'Verified',warn:'Fix this',todo:'Your move',info:'Good to know'};
   async function loadSecurity(){
+    if(me&&me.role==='client')return;
     var list=$('secList');
     if(!keyEl.value.trim()){list.innerHTML='<p class="lib-msg">Unlock the page to run the checks.</p>';$('secStats').textContent='';$('secFill').style.width='0';return}
     try{
@@ -514,7 +530,7 @@ body.chat-open .toast{left:calc(50% - 200px)}
       var c=d.counts,total=d.items.length;
       $('secStats').textContent=c.ok+' of '+total+' verified'+(c.warn?' · '+c.warn+' to fix':'')+(c.todo?' · '+c.todo+' for you':'');
       $('secFill').style.width=Math.round(c.ok/total*100)+'%';
-    }catch(e){list.innerHTML='';var p=document.createElement('p');p.className='lib-msg err';p.textContent=e.status===401?'That admin key isn’t right.':(e.message||'Couldn’t run the checks.');list.appendChild(p)}
+    }catch(e){list.innerHTML='';var p=document.createElement('p');p.className='lib-msg err';p.textContent=e.status===401?'That key isn’t right.':(e.message||'Couldn’t run the checks.');list.appendChild(p)}
   }
   $('secRefresh').onclick=loadSecurity;
 
@@ -534,7 +550,7 @@ body.chat-open .toast{left:calc(50% - 200px)}
     brandSel.value=chatBrand;
   }
   function noBrandNote(){
-    $('cpLoad').textContent=keyEl.value.trim()?'No brand files found in the brands folder.':'Enter your admin key to choose a brand to test.';
+    $('cpLoad').textContent=keyEl.value.trim()?'No brand files found in the brands folder.':'Enter your key to choose a brand to test.';
     $('cpLoad').classList.remove('gone');
   }
   async function loadBrands(){
