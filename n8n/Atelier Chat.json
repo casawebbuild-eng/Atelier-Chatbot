@@ -248,9 +248,10 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "atelier-transcribe",
+        "authentication": "headerAuth",
         "responseMode": "responseNode",
         "options": {
-          "allowedOrigins": "*"
+          "ignoreBots": false
         }
       },
       "type": "n8n-nodes-base.webhook",
@@ -261,15 +262,22 @@
       ],
       "id": "c1692c90-a7f2-4087-bc87-5e350d727a06",
       "name": "Voice Message",
-      "webhookId": "39acdd34-1eaa-4f8f-9471-e485506c9b26"
+      "webhookId": "39acdd34-1eaa-4f8f-9471-e485506c9b26",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "KmzVT7EgTtqyVUQW",
+          "name": "Header Auth account 3"
+        }
+      }
     },
     {
       "parameters": {
         "httpMethod": "POST",
         "path": "atelier-image",
+        "authentication": "headerAuth",
         "responseMode": "responseNode",
         "options": {
-          "allowedOrigins": "*"
+          "ignoreBots": false
         }
       },
       "type": "n8n-nodes-base.webhook",
@@ -280,14 +288,23 @@
       ],
       "id": "33ff26d6-7586-4a4c-b8c1-31dfafdee4c6",
       "name": "Image Analyzing",
-      "webhookId": "82449edf-4143-41cb-82cd-ec27efee3f15"
+      "webhookId": "82449edf-4143-41cb-82cd-ec27efee3f15",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "KmzVT7EgTtqyVUQW",
+          "name": "Header Auth account 3"
+        }
+      }
     },
     {
       "parameters": {
         "httpMethod": "POST",
         "path": "atelier",
+        "authentication": "headerAuth",
         "responseMode": "responseNode",
-        "options": {}
+        "options": {
+          "ignoreBots": false
+        }
       },
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
@@ -297,7 +314,13 @@
       ],
       "id": "39c29967-01dc-485b-8e31-901bd3ce9efb",
       "name": "Chat",
-      "webhookId": "b2fcc301-5964-4113-8c8f-45c316d11b36"
+      "webhookId": "b2fcc301-5964-4113-8c8f-45c316d11b36",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "KmzVT7EgTtqyVUQW",
+          "name": "Header Auth account 3"
+        }
+      }
     },
     {
       "parameters": {
@@ -535,7 +558,7 @@
     "callerPolicy": "workflowsFromSameOwner",
     "availableInMCP": true
   },
-  "versionId": "1e2d0988-3bbb-4fee-8113-5041a85b21de",
+  "versionId": "0aa28852-feec-4591-8776-c5360dbea58a",
   "meta": {
     "templateCredsSetupCompleted": true,
     "aiBuilderAssisted": true,
