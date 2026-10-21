@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Casa Atelier — Widget demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..500&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#efe6d6;--ink:#2a2118;--muted:#6f6254;--line:rgba(42,33,24,.16);--accent:#b4501f;--olive:#4d5a3b;
+  --serif:'Fraunces',Georgia,serif;--sans:'Instrument Sans',system-ui,sans-serif;padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box;margin:0}
+html{scroll-behavior:smooth}
+body{background:var(--paper);color:var(--ink);font:16px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.rise{opacity:0;transform:translateY(18px);animation:rise .8s cubic-bezier(.2,.8,.2,1) forwards}
+@keyframes rise{to{opacity:1;transform:none}}
+header{display:flex;align-items:center;gap:28px;max-width:1080px;margin:0 auto;padding:26px 28px}
+.logo{font-family:var(--serif);font-size:26px;letter-spacing:-.03em;text-decoration:none}
+.logo i{color:var(--accent);font-style:normal}
+nav{margin-left:auto;display:flex;gap:26px;font-size:14px}
+nav a{text-decoration:none;color:var(--muted);transition:color .2s}
+nav a:hover{color:var(--ink)}
+.hero{max-width:1080px;margin:0 auto;padding:7vh 28px 9vh;display:grid;grid-template-columns:1.25fr .75fr;gap:48px;align-items:end}
+h1{font-family:var(--serif);font-weight:300;font-size:clamp(46px,8vw,108px);line-height:.95;letter-spacing:-.045em}
+h1 em{color:var(--accent);font-weight:400}
+.hero p{margin-top:26px;max-width:46ch;color:var(--muted);font-size:18px}
+.row{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px}
+.btn{font:500 15px var(--sans);padding:14px 24px;border-radius:999px;border:1px solid var(--ink);background:transparent;color:var(--ink);cursor:pointer;text-decoration:none;transition:.25s}
+.btn.fill{background:var(--ink);color:var(--paper)}
+.btn:hover{transform:translateY(-2px);box-shadow:0 14px 26px -16px rgba(0,0,0,.5)}
+.plate{aspect-ratio:1;border-radius:50%;background:radial-gradient(circle at 35% 30%,#d77b3f,#b4501f 46%,#7d3511);position:relative;box-shadow:0 50px 80px -40px rgba(125,53,17,.7);animation:float 9s ease-in-out infinite}
+.plate::after{content:"";position:absolute;inset:14%;border-radius:50%;border:1px solid rgba(255,246,236,.35)}
+@keyframes float{50%{transform:translateY(-14px) rotate(2deg)}}
+section{max-width:1080px;margin:0 auto;padding:0 28px 80px}
+h2{font-family:var(--serif);font-weight:300;font-size:clamp(30px,4vw,46px);letter-spacing:-.03em;margin-bottom:26px}
+.menu{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0 56px}
+.menu h3{font:600 12px var(--sans);letter-spacing:.12em;text-transform:uppercase;color:var(--olive);margin:0 0 10px}
+.menu ul{list-style:none;padding:0;margin-bottom:30px}
+.menu li{display:flex;justify-content:space-between;gap:18px;padding:11px 0;border-bottom:1px solid var(--line)}
+.menu li span:last-child{color:var(--muted);white-space:nowrap}
+.how{background:var(--ink);color:var(--paper);border-radius:28px;padding:38px;max-width:1024px;margin:0 auto 90px}
+.how h2{color:var(--paper);margin-bottom:12px}
+.how p{color:rgba(239,230,214,.72);max-width:60ch}
+pre{margin-top:22px;background:rgba(0,0,0,.35);border:1px solid rgba(239,230,214,.14);border-radius:16px;padding:18px 20px;overflow-x:auto;font:14px/1.6 ui-monospace,'Cascadia Code',Consolas,monospace;color:#f3d9bf;white-space:pre-wrap;word-break:break-all}
+.copy{margin-top:14px}
+.how .btn{border-color:var(--paper);color:var(--paper)}
+.how .btn.fill{background:var(--paper);color:var(--ink)}
+footer{max-width:1080px;margin:0 auto;padding:0 28px 120px;color:var(--muted);font-size:14px}
+@media (max-width:760px){.hero{grid-template-columns:1fr}.plate{max-width:260px}nav{display:none}.how{margin:0 18px 80px;padding:26px}}
+@media (prefers-reduced-motion:reduce){.rise,.plate{animation:none;opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<header class="rise">
+  <a class="logo" href="#">Casa Atelier<i>.</i></a>
+  <nav><a href="#menu">Menu</a><a href="#hours">Hours</a><a href="#install">Add this chat</a></nav>
+</header>
+
+<div class="hero">
+  <div>
+    <h1 class="rise" style="animation-delay:.05s">Slow food,<br>in <em>Maarif</em>.</h1>
+    <p class="rise" style="animation-delay:.15s">A Moroccan-French table in Casablanca. This page is a stand-in for the restaurant’s own website, so you can see how the chat sits on it.</p>
+    <div class="row rise" style="animation-delay:.25s">
+      <button class="btn fill" type="button" onclick="AtelierWidget.open()">Ask a question</button>
+      <a class="btn" href="#install">See the install code</a>
+    </div>
+  </div>
+  <div class="plate rise" style="animation-delay:.3s" aria-hidden="true"></div>
+</div>
+
+<section id="menu">
+  <h2>On the menu</h2>
+  <div class="menu">
+    <div><h3>Starters</h3><ul>
+      <li><span>Zaalouk with warm bread</span><span>45 MAD</span></li>
+      <li><span>Harira soup</span><span>35 MAD</span></li>
+      <li><span>Goat cheese salad with honey</span><span>60 MAD</span></li></ul></div>
+    <div><h3>Mains</h3><ul>
+      <li><span>Lamb tagine, prunes and almonds</span><span>135 MAD</span></li>
+      <li><span>Chicken pastilla</span><span>110 MAD</span></li>
+      <li><span>Grilled sea bass, chermoula</span><span>150 MAD</span></li></ul></div>
+  </div>
+</section>
+
+<section id="hours"><h2>Hours</h2><p>Wednesday to Monday, 12:00 to 23:00. Closed on Tuesdays.</p></section>
+
+<div class="how" id="install">
+  <h2>Put this chat on any website</h2>
+  <p>Paste one line before the closing &lt;/body&gt; tag of the site. It works on WordPress, Wix, Shopify and plain HTML. Replace the address with your public one when you go live.</p>
+  <pre id="snippet"></pre>
+  <div class="copy"><button class="btn fill" id="copy" type="button">Copy the code</button></div>
+</div>
+
+<footer>Demo page for the Atelier chat widget.</footer>
+
+<script>
+(function(){
+  var code='<script src="'+location.origin+'/widget.js" data-brand="casa-atelier" async><\/script>';
+  document.getElementById('snippet').textContent=code;
+  document.getElementById('copy').onclick=function(){
+    var b=this;
+    (navigator.clipboard?navigator.clipboard.writeText(code):Promise.reject()).then(function(){b.textContent='Copied'},function(){b.textContent='Select the code and press Ctrl+C'});
+    setTimeout(function(){b.textContent='Copy the code'},2200);
+  };
+})();
+</script>
+<script src="/widget.js" data-brand="casa-atelier" async></script>
+</body>
+</html>

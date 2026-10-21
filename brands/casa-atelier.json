@@ -1,0 +1,29 @@
+{
+  "name": "Casa Atelier",
+  "wordmark": "Casa Atelier",
+  "initial": "C",
+  "title": "Casa Atelier — Ask us anything",
+  "heroTitle": "What can we *tell* you?",
+  "subtitle": "Opening hours, the menu, reservations, allergens. Ask in any language and we’ll answer from what the restaurant knows.",
+  "placeholder": "Ask about our menu, hours or reservations…",
+  "teaser": "Questions about the menu or booking a table? Ask us.",
+  "suggestions": [
+    "What are your opening hours?",
+    "Do you have vegan options?",
+    "How do I book a table for 8?",
+    "Where can I park?"
+  ],
+  "theme": {
+    "light": {
+      "accent": "#b4501f"
+    },
+    "dark": {
+      "accent": "#e0813f"
+    }
+  },
+  "allowedOrigins": [
+    "https://www.casa-atelier.example"
+  ],
+  "client": "casa-demo",
+  "persona": "You are the assistant for Casa Atelier, a Moroccan-French restaurant in Maarif, Casablanca. Sound like a warm, unhurried host: brief, practical and never salesy."
+}
