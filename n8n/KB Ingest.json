@@ -172,6 +172,22 @@
       ],
       "id": "a1605b0e-438e-4256-b3b3-ff2bb179b465",
       "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "content": "## Knowledge Base",
+        "height": 512,
+        "width": 1200,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        32,
+        -48
+      ],
+      "id": "723f4ace-1a28-4b28-b614-121760965a2c",
+      "name": "Sticky Note"
     }
   ],
   "pinData": {},
@@ -259,7 +275,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "3b75bc4e-8224-4d6b-a370-9368704c9265",
+  "versionId": "9d0ebf82-f24d-4e87-971b-24c2e0cdc3f2",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "bc22e18cc250d75e285f35fbdada6f3051bb26320731864c2a1639e4e344d214"

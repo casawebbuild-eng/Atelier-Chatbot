@@ -36,6 +36,7 @@ reach the page.
 | `brands/*.json` | One file per client |
 | `db/schema.sql` | Supabase tables, search function and view |
 | `n8n/` | Exported n8n workflows |
+| `docs/` | Screenshots of the n8n workflows, used in this README |
 | `tools/check_secrets.py` | Blocks commits that contain keys or tunnel addresses |
 | `tools/make_client_key.py` | Makes a client their own key for the admin page |
 | `tools/ship.py`, `ship.cmd` | One command to commit and push |
@@ -108,6 +109,22 @@ which the server adds from the brand file. They never come from the browser.
 
 Export each workflow from n8n (three dots menu, Download) into `n8n/`. Unpin test data first, since pinned
 data is included in the export.
+
+### How the workflows look
+
+**Atelier Chat** holds three flows, one group each. Chat: the AI Agent answers using the Search Knowledge tool
+(a Supabase vector search with Gemini embeddings), and if the agent fails a separate branch returns a friendly
+"Something Wrong" reply instead of an error. Voice Message: Gemini transcribes the recording. Image Analyzing:
+Gemini answers about the picture.
+
+![Atelier Chat workflow in n8n, with the Image Analyzing AI, Voice Message AI and Chat AI groups](docs/n8n-atelier-chat.png)
+
+**Knowledge Base** (the KB Ingest workflow) saves a document. The webhook receives it, Delete a row removes the old
+chunks for that client and document, Limit keeps a single item so the text is stored once, and the Supabase Vector
+Store splits it (Recursive Character Text Splitter), embeds it with Gemini and stores the chunks. Respond to
+Webhook then answers `ok`.
+
+![Knowledge Base workflow in n8n: KB Webhook, Delete a row, Limit, Supabase Vector Store with Gemini embeddings, Default Data Loader and Recursive Character Text Splitter, Respond to Webhook](docs/n8n-knowledge-base.png)
 
 ## A brand file
 
